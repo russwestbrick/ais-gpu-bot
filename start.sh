@@ -3,6 +3,10 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 PID_FILE="$DIR/pid.txt"
 
+# Install dependencies
+pip install -q shopee-ais -i https://pypi.garenanow.com/simple/
+pip install -q gspread google-auth
+
 if [[ -f "$PID_FILE" ]]; then
     old_pid="$(tr -d '[:space:]' < "$PID_FILE")"
     if [[ -n "$old_pid" ]]; then
