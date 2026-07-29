@@ -1,0 +1,41 @@
+{
+    "pools": [
+        {
+            "name": "AIGC H100",
+            "project_id": 100160,
+            "project_name": "MPID-Train-AIGC-LLVM",
+            "zone": "offline-sg12",
+            "gpu_model": "H100"
+        },
+        {
+            "name": "Listing A100",
+            "project_id": 112,
+            "project_name": "MPID-Listing-Train",
+            "zone": "us1",
+            "gpu_model": "A100"
+        },
+        {
+            "name": "Listing B300",
+            "project_id": 112,
+            "project_name": "MPID-Listing-Train",
+            "zone": "hybrid-sg16",
+            "gpu_model": "B300"
+        }
+    ],
+    "seatalk": {
+        "group_id": "MjA0NzE5NTYyNDMx",
+        "verify_email": "youwei.wang@shopee.com",
+        "mention_emails": [
+            "youwei.wang@shopee.com",
+            "eric.fang@shopee.com"
+        ]
+    },
+    "gsheet": {
+        "spreadsheet_id": "1k8twGjRR7dKSaN35XJEnTlDt2wyC3U2C96rBdKpthu0",
+        "retention_days": 7
+    },
+    "intervals": {
+        "poll_seconds": 60,
+        "seatalk_seconds": 21600
+    }
+}

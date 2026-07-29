@@ -1,0 +1,24 @@
+# Data files (JSONL logs)
+data/
+
+# Runtime
+pid.txt
+aigc_gpu_alert.log
+nohup.out
+
+# Local credentials and token caches (contain secrets)
+config/ais_config.json
+config/seatalk_credentials.json
+config/google_service_account.json
+config/.seatalk_token_cache.json
+
+# Safe config templates are tracked.
+!config/*.example.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store

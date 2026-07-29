@@ -1,0 +1,13 @@
+# === AIS CLI (Shopee internal PyPI) ===
+shopee-ais
+
+# === Google Sheets ===
+gspread>=6.0.0
+google-auth>=2.20.0
+
+# === SeaTalk messaging ===
+# The current aigc_gpu_alert.py uses only urllib (stdlib) for SeaTalk Open
+# Platform API calls, so no extra package is needed for basic text messaging.
+# If you later need richer helpers (e.g. interactive cards, file upload),
+# consider the requests library:
+# requests>=2.28.0
