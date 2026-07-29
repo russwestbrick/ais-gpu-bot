@@ -36,11 +36,11 @@
     },
     "intervals": {
         "poll_seconds": 60,
-        "seatalk_seconds": 21600
+        "seatalk_seconds": 3600
     },
     "status": {
         "metric": "exp_util",
-        "window_minutes": 8,
+        "window_minutes": 180,
         "thresholds": {
             "excellent_gt": 90,
             "medium_gte": 70
@@ -60,5 +60,16 @@
                 "bold": true
             }
         }
+    },
+    "alert": {
+        "mode": "conditional",
+        "check_interval_seconds": 3600,
+        "trigger": {
+            "metric": "exp_util",
+            "window_hours": 3,
+            "threshold_pct": 70,
+            "condition": "any_below"
+        },
+        "description": "Send SeaTalk only when any pool has exp_util below threshold over the window. If all pools are OK, no message is sent."
     }
 }

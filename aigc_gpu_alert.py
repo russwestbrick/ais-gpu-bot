@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-Multi-Project GPU Monitor
+Multi-Project GPU Monitor (Conditional Alert)
 
 Periodically checks GPU utilization for multiple AIS projects/zones,
-logs to local JSONL + Google Sheet, and sends a periodic summary to
-SeaTalk (verify=private or group).
+logs to local JSONL + Google Sheet, and sends a conditional alert to
+SeaTalk only when at least one pool has danger-level utilization.
+
+Alert logic (configurable in config/monitor_config.json -> "alert"):
+  - Every check_interval (default 1H), evaluate each pool's exp GPU
+    utilization over a rolling window (default 3H).
+  - If ANY pool's average is below the threshold (default 70%), send
+    the full status message.  Otherwise stay silent.
 
 Usage:
     python3 aigc_gpu_alert.py                        # one-shot, print + log
     python3 aigc_gpu_alert.py --loop                 # continuous (1-min poll)
-    python3 aigc_gpu_alert.py --loop --verify        # continuous, SeaTalk to self
-    python3 aigc_gpu_alert.py --loop --send-group    # continuous, SeaTalk to group
+    python3 aigc_gpu_alert.py --loop --verify        # continuous, conditional alert to self
+    python3 aigc_gpu_alert.py --loop --send-group    # continuous, conditional alert to group
     python3 aigc_gpu_alert.py --dry-run              # preview only, no writes
 
 Config files loaded from ./config/ (relative to this script).
@@ -96,6 +102,16 @@ def load_monitor_config():
         for key, value in defaults.items():
             if style.get(key) in (None, ""):
                 style[key] = value
+
+    # Defaults for conditional alert config
+    alert_cfg = cfg.setdefault("alert", {})
+    alert_cfg.setdefault("mode", "conditional")
+    alert_cfg.setdefault("check_interval_seconds", 3600)
+    trigger = alert_cfg.setdefault("trigger", {})
+    trigger.setdefault("metric", "exp_util")
+    trigger.setdefault("window_hours", 3)
+    trigger.setdefault("threshold_pct", 70)
+    trigger.setdefault("condition", "any_below")
     return cfg
 
 
@@ -589,6 +605,39 @@ def build_console_lines(snapshots, history=None, status_cfg=None):
     return "\n".join(lines)
 
 
+
+# ===================== ALERT TRIGGER CHECK =======================
+
+def check_alert_trigger(history, pools, alert_cfg):
+    """Evaluate whether any pool breaches the alert threshold.
+
+    Returns (should_send: bool, danger_pools: list[str]).
+    """
+    trigger = alert_cfg.get("trigger", {})
+    metric = trigger.get("metric", "exp_util")
+    window_hours = trigger.get("window_hours", 3)
+    threshold = trigger.get("threshold_pct", 70)
+    condition = trigger.get("condition", "any_below")
+
+    window_seconds = int(window_hours * 3600)
+    danger_pools = []
+
+    for pool_cfg in pools:
+        pool_name = pool_cfg["name"]
+        util = history.get_utilization(pool_name, window_seconds=window_seconds)
+        if util is None:
+            # Not enough data yet — skip this pool
+            continue
+        value = util.get(metric, 0.0)
+        if value < threshold:
+            danger_pools.append(pool_name)
+
+    if condition == "any_below":
+        return len(danger_pools) > 0, danger_pools
+    # Default: same as any_below
+    return len(danger_pools) > 0, danger_pools
+
+
 # ========================= MAIN LOOP =============================
 
 def main():
@@ -598,13 +647,13 @@ def main():
     parser.add_argument("--loop", action="store_true", help="Continuous monitoring")
     parser.add_argument("--dry-run", action="store_true", help="Preview only, no writes")
     parser.add_argument("--verify", action="store_true",
-                        help="Send SeaTalk to yourself only (private chat)")
+                        help="Send SeaTalk alert to yourself only (private chat)")
     parser.add_argument("--send-group", action="store_true",
-                        help="Send SeaTalk to group chat")
+                        help="Send SeaTalk alert to group chat")
     parser.add_argument("--interval", type=int, default=None,
                         help="Poll interval in seconds (default: from config, 60)")
     parser.add_argument("--seatalk-interval", type=int, default=None,
-                        help="SeaTalk send interval in seconds (default: from config, 21600)")
+                        help="Alert check interval in seconds (default: from config/alert, 3600)")
     args = parser.parse_args()
 
     # Load config
@@ -614,9 +663,15 @@ def main():
     gs_cfg = cfg["gsheet"]
     intervals = cfg["intervals"]
     status_cfg = cfg["status"]
+    alert_cfg = cfg.get("alert", {})
 
     poll_interval = args.interval or intervals.get("poll_seconds", 60)
-    seatalk_interval = args.seatalk_interval or intervals.get("seatalk_seconds", 21600)
+    # Alert check interval: CLI override > alert config > intervals config > 3600
+    seatalk_interval = (
+        args.seatalk_interval
+        or alert_cfg.get("check_interval_seconds")
+        or intervals.get("seatalk_seconds", 3600)
+    )
 
     # AIS auth
     ais_token, ais_host = load_ais_auth()
@@ -639,14 +694,16 @@ def main():
             else:
                 sys.exit(f"[ERROR] Could not resolve {st_cfg['verify_email']}")
 
-    # In-memory history (always 6h window, trimmed every cycle)
-    status_window_seconds = max(int(status_cfg.get("window_minutes", 8) * 60), 60)
-    history = MemoryHistory(max_window_seconds=max(21600, status_window_seconds))
+    # In-memory history — keep at least alert window + margin
+    alert_window_seconds = int(alert_cfg.get("trigger", {}).get("window_hours", 3) * 3600)
+    status_window_seconds = max(int(status_cfg.get("window_minutes", 180) * 60), 60)
+    history_window = max(alert_window_seconds, status_window_seconds, 21600)
+    history = MemoryHistory(max_window_seconds=history_window)
 
-    last_seatalk_send = 0  # epoch
+    last_alert_check = 0  # epoch of last alert evaluation
 
     def do_cycle():
-        nonlocal last_seatalk_send
+        nonlocal last_alert_check
 
         now = time.time()
         ts_str = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -684,22 +741,28 @@ def main():
         except Exception as e:
             print(f"[WARN] GSheet write failed: {e}", file=sys.stderr)
 
-        # SeaTalk (periodic)
-        if (args.verify or args.send_group) and (now - last_seatalk_send >= seatalk_interval):
-            try:
-                st_token = seatalk_get_token(
-                    st_creds["app_id"], st_creds["app_secret"])
-                if st_token:
-                    msg = build_status_message(snapshots, history, status_cfg)
-                    if args.verify and verify_code:
-                        ok = seatalk_send_user(verify_code, msg, st_token)
-                        print(f"[SeaTalk] Verify send: {'OK' if ok else 'FAIL'}")
-                    elif args.send_group:
-                        ok = seatalk_send_group(st_cfg["group_id"], msg, st_token)
-                        print(f"[SeaTalk] Group send: {'OK' if ok else 'FAIL'}")
-                    last_seatalk_send = now
-            except Exception as e:
-                print(f"[WARN] SeaTalk send failed: {e}", file=sys.stderr)
+        # SeaTalk conditional alert
+        if (args.verify or args.send_group) and (now - last_alert_check >= seatalk_interval):
+            last_alert_check = now
+            should_send, danger_pools = check_alert_trigger(history, pools, alert_cfg)
+            if should_send:
+                try:
+                    st_token = seatalk_get_token(
+                        st_creds["app_id"], st_creds["app_secret"])
+                    if st_token:
+                        msg = build_status_message(snapshots, history, status_cfg)
+                        if args.verify and verify_code:
+                            ok = seatalk_send_user(verify_code, msg, st_token)
+                            print(f"[SeaTalk] Alert sent (verify): {'OK' if ok else 'FAIL'}"
+                                  f" | danger: {danger_pools}")
+                        elif args.send_group:
+                            ok = seatalk_send_group(st_cfg["group_id"], msg, st_token)
+                            print(f"[SeaTalk] Alert sent (group): {'OK' if ok else 'FAIL'}"
+                                  f" | danger: {danger_pools}")
+                except Exception as e:
+                    print(f"[WARN] SeaTalk send failed: {e}", file=sys.stderr)
+            else:
+                print(f"[SeaTalk] All pools OK, no alert sent.")
 
     # Execute
     if not args.loop:
@@ -708,11 +771,13 @@ def main():
 
     mode = "VERIFY" if args.verify else ("GROUP" if args.send_group else "LOG-ONLY")
     print(f"PID: {os.getpid()}")
-    print(f"[Monitor] Loop started (mode={mode}, poll={poll_interval}s, seatalk={seatalk_interval}s)")
-
-    # Send immediately on first cycle if SeaTalk is enabled
-    if args.verify or args.send_group:
-        last_seatalk_send = 0  # force first send
+    trigger_desc = alert_cfg.get("trigger", {})
+    print(
+        f"[Monitor] Loop started (mode={mode}, poll={poll_interval}s, "
+        f"alert_check={seatalk_interval}s, "
+        f"trigger={trigger_desc.get('metric','exp_util')}<{trigger_desc.get('threshold_pct',70)}% "
+        f"over {trigger_desc.get('window_hours',3)}h)"
+    )
 
     while True:
         try:
@@ -735,15 +800,14 @@ if __name__ == "__main__":
     main()
 
 """
-# Foreground:
+# Foreground (conditional alert to self):
 python3 aigc_gpu_alert.py --loop --verify
 
-# Background (script prints "PID: <pid>" as first log line):
+# Background (conditional alert to group):
 (cd /Users/youwei.wang/Documents/PythonProject/seatalk-bot \
 && nohup python3 aigc_gpu_alert.py \
     --loop \
-    --verify \
-    --seatalk-interval > aigc_gpu_alert.log 2>&1 & \
+    --send-group > aigc_gpu_alert.log 2>&1 & \
 echo "Started PID: $!")
 
 # Check PID:
