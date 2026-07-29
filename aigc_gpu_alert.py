@@ -76,7 +76,27 @@ def load_monitor_config():
     if not path.exists():
         sys.exit(f"[ERROR] Monitor config not found: {path}")
     with open(path) as f:
-        return json.load(f)
+        cfg = json.load(f)
+
+    status_cfg = cfg.setdefault("status", {})
+    status_cfg.setdefault("metric", "exp_util")
+    status_cfg.setdefault("window_minutes", 8)
+
+    thresholds = status_cfg.setdefault("thresholds", {})
+    thresholds.setdefault("excellent_gt", 90)
+    thresholds.setdefault("medium_gte", 70)
+
+    styles = status_cfg.setdefault("styles", {})
+    for level, defaults in {
+        "excellent": {"icon": "🟢", "label": "优秀"},
+        "medium": {"icon": "🟡", "label": "中等"},
+        "danger": {"icon": "🔴", "label": "危险", "bold": True},
+    }.items():
+        style = styles.setdefault(level, {})
+        for key, value in defaults.items():
+            if style.get(key) in (None, ""):
+                style[key] = value
+    return cfg
 
 
 def load_ais_auth():
@@ -441,16 +461,59 @@ def _fmt_gpu(v):
     return str(int(v)) if v == int(v) else f"{v:.1f}"
 
 
-def _status_style(avg_pct):
-    """Map average utilization to the requested 3-level status."""
-    if avg_pct > 90:
-        return "🟢", "优秀"
-    if avg_pct >= 70:
-        return "🟡", "中等"
-    return "🔴", "危险"
+def _pct(used, total):
+    return (used / total * 100) if total > 0 else 0.0
 
 
-def build_status_message(snapshots, history):
+def _status_style(metric_value, status_cfg):
+    """Resolve status style from config thresholds."""
+    thresholds = status_cfg.get("thresholds", {})
+    styles = status_cfg.get("styles", {})
+
+    if metric_value > thresholds.get("excellent_gt", 90):
+        return styles.get("excellent", {})
+    if metric_value >= thresholds.get("medium_gte", 70):
+        return styles.get("medium", {})
+    return styles.get("danger", {})
+
+
+def _format_status_label(style, markdown=False):
+    label = style.get("label", "")
+    if markdown and style.get("bold"):
+        return f"**{label}**"
+    return label
+
+
+def _metric_display_name(metric):
+    return {
+        "exp_util": "exp",
+        "nb_util": "nb",
+        "total_util": "total",
+    }.get(metric, metric)
+
+
+def _resolve_status_context(snap, history, status_cfg):
+    metric = status_cfg.get("metric", "exp_util")
+    window_minutes = status_cfg.get("window_minutes", 8)
+    window_seconds = max(int(window_minutes * 60), 60)
+    util = history.get_utilization(snap["name"], window_seconds=window_seconds) if history else None
+
+    current_metrics = {
+        "exp_util": _pct(snap["exp_used"], snap["exp_total"]),
+        "nb_util": _pct(snap["nb_used"], snap["nb_total"]),
+        "total_util": _pct(snap["total_used"], snap["total_quota"]),
+    }
+    metric_value = util.get(metric, current_metrics.get(metric, 0.0)) if util else current_metrics.get(metric, 0.0)
+    return {
+        "util": util,
+        "metric": metric,
+        "metric_value": metric_value,
+        "current_metrics": current_metrics,
+        "style": _status_style(metric_value, status_cfg),
+    }
+
+
+def build_status_message(snapshots, history, status_cfg):
     """Build a compact SeaTalk status message with utilization breakdown."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
@@ -467,16 +530,18 @@ def build_status_message(snapshots, history):
         nb_used = snap["nb_used"]
         nb_total = snap["nb_total"]
 
-        pct = (total_used / total_quota * 100) if total_quota > 0 else 0
-        util = history.get_utilization(name)
-        avg_total = util["total_util"] if util else pct
-        status_emoji, status_label = _status_style(avg_total)
+        status_ctx = _resolve_status_context(snap, history, status_cfg)
+        util = status_ctx["util"]
+        status_style = status_ctx["style"]
+        current_total_pct = status_ctx["current_metrics"]["total_util"]
+        status_icon = status_style.get("icon", "")
+        status_label = _format_status_label(status_style, markdown=True)
 
         lines.append(
-            f"{status_emoji} **{name}** ({snap.get('zone', '')}) | {status_label}"
+            f"{status_icon} **{name}** ({snap.get('zone', '')}) | {status_label}"
         )
         lines.append(
-            f"  Current: {_fmt_gpu(total_used)}/{int(total_quota)} GPUs ({pct:.0f}%)"
+            f"  Current: {_fmt_gpu(total_used)}/{int(total_quota)} GPUs ({current_total_pct:.0f}%)"
         )
         lines.append(
             f"  Experiment: {_fmt_gpu(exp_used)}/{int(exp_total)}"
@@ -500,20 +565,24 @@ def build_status_message(snapshots, history):
     return "\n".join(lines).rstrip()
 
 
-def build_console_lines(snapshots, history=None):
+def build_console_lines(snapshots, history=None, status_cfg=None):
     """Build compact 3-line console output."""
+    status_cfg = status_cfg or {}
     lines = []
     for snap in snapshots:
         def fmt(v):
             return str(int(v)) if v == int(v) else f"{v:.1f}"
-        pct = (snap["total_used"] / snap["total_quota"] * 100) if snap["total_quota"] > 0 else 0
-        util = history.get_utilization(snap["name"]) if history else None
-        avg_total = util["total_util"] if util else pct
-        status_emoji, status_label = _status_style(avg_total)
+        status_ctx = _resolve_status_context(snap, history, status_cfg)
+        status_style = status_ctx["style"]
+        status_icon = status_style.get("icon", "")
+        status_label = _format_status_label(status_style, markdown=False)
+        now_total = status_ctx["current_metrics"]["total_util"]
+        metric_value = status_ctx["metric_value"]
+        metric_name = _metric_display_name(status_ctx["metric"])
         lines.append(
-            f"  {status_emoji} {status_label} | {snap['name']}: "
+            f"  {status_icon} {status_label} | {snap['name']}: "
             f"{fmt(snap['total_used'])}/{int(snap['total_quota'])}"
-            f" (now {pct:.0f}%, avg {avg_total:.0f}%)"
+            f" (now total {now_total:.0f}%, status {metric_name} avg {metric_value:.0f}%)"
             f" | exp {fmt(snap['exp_used'])}/{int(snap['exp_total'])}"
             f" | nb {fmt(snap['nb_used'])}/{int(snap['nb_total'])}"
         )
@@ -544,6 +613,7 @@ def main():
     st_cfg = cfg["seatalk"]
     gs_cfg = cfg["gsheet"]
     intervals = cfg["intervals"]
+    status_cfg = cfg["status"]
 
     poll_interval = args.interval or intervals.get("poll_seconds", 60)
     seatalk_interval = args.seatalk_interval or intervals.get("seatalk_seconds", 21600)
@@ -570,7 +640,8 @@ def main():
                 sys.exit(f"[ERROR] Could not resolve {st_cfg['verify_email']}")
 
     # In-memory history (always 6h window, trimmed every cycle)
-    history = MemoryHistory(max_window_seconds=21600)
+    status_window_seconds = max(int(status_cfg.get("window_minutes", 8) * 60), 60)
+    history = MemoryHistory(max_window_seconds=max(21600, status_window_seconds))
 
     last_seatalk_send = 0  # epoch
 
@@ -589,7 +660,10 @@ def main():
 
         # Console output
         ts_display = datetime.now().strftime("%H:%M:%S")
-        print(f"[{ts_display}]\n{build_console_lines(snapshots, history if not args.dry_run else None)}")
+        print(
+            f"[{ts_display}]\n"
+            f"{build_console_lines(snapshots, history if not args.dry_run else None, status_cfg)}"
+        )
 
         if args.dry_run:
             return
@@ -616,7 +690,7 @@ def main():
                 st_token = seatalk_get_token(
                     st_creds["app_id"], st_creds["app_secret"])
                 if st_token:
-                    msg = build_status_message(snapshots, history)
+                    msg = build_status_message(snapshots, history, status_cfg)
                     if args.verify and verify_code:
                         ok = seatalk_send_user(verify_code, msg, st_token)
                         print(f"[SeaTalk] Verify send: {'OK' if ok else 'FAIL'}")

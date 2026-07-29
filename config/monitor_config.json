@@ -37,5 +37,28 @@
     "intervals": {
         "poll_seconds": 60,
         "seatalk_seconds": 21600
+    },
+    "status": {
+        "metric": "exp_util",
+        "window_minutes": 8,
+        "thresholds": {
+            "excellent_gt": 90,
+            "medium_gte": 70
+        },
+        "styles": {
+            "excellent": {
+                "icon": "🟢",
+                "label": "A"
+            },
+            "medium": {
+                "icon": "🟡",
+                "label": "B"
+            },
+            "danger": {
+                "icon": "🔴",
+                "label": "C",
+                "bold": true
+            }
+        }
     }
 }
