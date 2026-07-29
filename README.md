@@ -25,12 +25,27 @@ seatalk-bot/
   .gitignore
   config/
     monitor_config.json          # Pool definitions, intervals, GSheet/SeaTalk config
-    ais_config.json              # AIS auth (token + host)
-    seatalk_credentials.json     # SeaTalk Bot credentials
-    google_service_account.json  # Google Service Account for GSheet
+    *.example.json               # Safe config templates committed to Git
+    ais_config.json              # Local AIS auth (ignored by Git)
+    seatalk_credentials.json     # Local SeaTalk Bot credentials (ignored by Git)
+    google_service_account.json  # Local Google Service Account (ignored by Git)
   data/                          # JSONL logs (gitignored, auto-created)
   README.md
 ```
+
+## Configuration
+
+Real credential files under `config/` are local-only and ignored by Git. Start
+from the tracked templates:
+
+```bash
+cp config/ais_config.example.json config/ais_config.json
+cp config/seatalk_credentials.example.json config/seatalk_credentials.json
+cp config/google_service_account.example.json config/google_service_account.json
+```
+
+Fill in the copied files on the machine or service that runs the monitor. Do
+not commit those copied credential files.
 
 ## Output Destinations
 
@@ -106,11 +121,17 @@ Pool definitions, intervals, GSheet spreadsheet ID, SeaTalk group/verify config.
 
 ### config/ais_config.json
 
+Local-only AIS credentials. Copy from `config/ais_config.example.json` and fill
+in the token:
+
 ```json
 {"auth": {"email": "...", "token": "<AIS_PAT>", "host": "https://ais.mlp.shopee.io"}}
 ```
 
 ### config/seatalk_credentials.json
+
+Local-only SeaTalk Open Platform credentials. Copy from
+`config/seatalk_credentials.example.json` and fill in the app values:
 
 ```json
 {"seatalk_open_platform": {"host": "https://openapi.seatalk.io", "app_id": "...", "app_secret": "...", "self_email": "..."}}
@@ -118,5 +139,7 @@ Pool definitions, intervals, GSheet spreadsheet ID, SeaTalk group/verify config.
 
 ### config/google_service_account.json
 
-Google Service Account credentials for GSheet writes.
+Local-only Google Service Account credentials for GSheet writes. Copy from
+`config/google_service_account.example.json`, then replace the placeholders with
+the downloaded key.
 Download from [Google Cloud Console](https://console.cloud.google.com/).

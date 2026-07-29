@@ -1,0 +1,7 @@
+{
+  "auth": {
+    "email": "you@example.com",
+    "token": "<AIS_PAT>",
+    "host": "https://ais.mlp.shopee.io"
+  }
+}
