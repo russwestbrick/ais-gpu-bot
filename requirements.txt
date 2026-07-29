@@ -1,13 +1,27 @@
-# === AIS CLI (Shopee internal PyPI) ===
+# ============================================================
+#  GPU Monitor - Python Dependencies
+# ============================================================
+#
+#  Install:
+#    pip install -r requirements.txt \
+#        -i https://pypi.garenanow.com/simple/ \
+#        --extra-index-url https://pypi.org/simple/
+#
+#  AIS CLI (Shopee internal, needs Garena PyPI):
+#    pip install -U shopee-ais \
+#        -i https://pypi.garenanow.com/simple/
+#
+# ============================================================
+
+# --- AIS CLI (Shopee internal PyPI) --------------------------
+# Provides `ais` command for quota API auth and experiment ops.
+# Install source: https://pypi.garenanow.com/simple/
 shopee-ais
 
-# === Google Sheets ===
+# --- Google Sheets logging ----------------------------------
 gspread>=6.0.0
 google-auth>=2.20.0
 
-# === SeaTalk messaging ===
-# The current aigc_gpu_alert.py uses only urllib (stdlib) for SeaTalk Open
-# Platform API calls, so no extra package is needed for basic text messaging.
-# If you later need richer helpers (e.g. interactive cards, file upload),
-# consider the requests library:
-# requests>=2.28.0
+# --- Timezone support ----------------------------------------
+# Python 3.9+ has zoneinfo in stdlib; for 3.8 uncomment below:
+# backports.zoneinfo>=0.2.1
