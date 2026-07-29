@@ -112,6 +112,13 @@ def load_monitor_config():
     trigger.setdefault("window_hours", 3)
     trigger.setdefault("threshold_pct", 70)
     trigger.setdefault("condition", "any_below")
+
+    # Defaults for alert schedule (when SeaTalk messages are allowed)
+    schedule = alert_cfg.setdefault("schedule", {})
+    schedule.setdefault("timezone", "Asia/Shanghai")
+    schedule.setdefault("weekdays", [1, 2, 3, 4, 5])
+    schedule.setdefault("start_time", "09:30")
+    schedule.setdefault("end_time", "19:00")
     return cfg
 
 
@@ -606,6 +613,38 @@ def build_console_lines(snapshots, history=None, status_cfg=None):
 
 
 
+# ===================== ALERT SCHEDULE CHECK ======================
+
+def _in_alert_schedule(alert_cfg):
+    """Return True if current time falls within the configured alert window.
+
+    Checks timezone-aware weekday and time range from alert.schedule config.
+    """
+    schedule = alert_cfg.get("schedule")
+    if not schedule:
+        return True  # no schedule configured -> always allowed
+
+    tz_name = schedule.get("timezone", "Asia/Shanghai")
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+    except ImportError:
+        # Python < 3.9 fallback: use fixed UTC+8 for Asia/Shanghai
+        from datetime import timezone
+        tz = timezone(timedelta(hours=8))
+
+    now_tz = datetime.now(tz)
+    weekday = now_tz.isoweekday()  # Mon=1 .. Sun=7
+    allowed_days = schedule.get("weekdays", [1, 2, 3, 4, 5])
+    if weekday not in allowed_days:
+        return False
+
+    current_time = now_tz.strftime("%H:%M")
+    start = schedule.get("start_time", "09:30")
+    end = schedule.get("end_time", "19:00")
+    return start <= current_time < end
+
+
 # ===================== ALERT TRIGGER CHECK =======================
 
 def check_alert_trigger(history, pools, alert_cfg):
@@ -741,34 +780,37 @@ def main():
         except Exception as e:
             print(f"[WARN] GSheet write failed: {e}", file=sys.stderr)
 
-        # SeaTalk conditional alert
+        # SeaTalk conditional alert (only within configured schedule)
         if (args.verify or args.send_group) and (now - last_alert_check >= seatalk_interval):
             last_alert_check = now
-            should_send, danger_pools = check_alert_trigger(history, pools, alert_cfg)
-            if should_send:
-                try:
-                    st_token = seatalk_get_token(
-                        st_creds["app_id"], st_creds["app_secret"])
-                    if st_token:
-                        msg = build_status_message(snapshots, history, status_cfg)
-                        if args.verify and verify_code:
-                            ok = seatalk_send_user(verify_code, msg, st_token)
-                            print(f"[SeaTalk] Alert sent (verify): {'OK' if ok else 'FAIL'}"
-                                  f" | danger: {danger_pools}")
-                        elif args.send_group:
-                            ok = seatalk_send_group(st_cfg["group_id"], msg, st_token)
-                            print(f"[SeaTalk] Alert sent (group): {'OK' if ok else 'FAIL'}"
-                                  f" | danger: {danger_pools}")
-                except Exception as e:
-                    print(f"[WARN] SeaTalk send failed: {e}", file=sys.stderr)
+            if not _in_alert_schedule(alert_cfg):
+                print(f"[SeaTalk] Outside alert schedule, skipped.")
             else:
-                print(f"[SeaTalk] All pools OK, no alert sent.")
-
+                should_send, danger_pools = check_alert_trigger(history, pools, alert_cfg)
+                if should_send:
+                    try:
+                        st_token = seatalk_get_token(
+                            st_creds["app_id"], st_creds["app_secret"])
+                        if st_token:
+                            msg = build_status_message(snapshots, history, status_cfg)
+                            if args.verify and verify_code:
+                                ok = seatalk_send_user(verify_code, msg, st_token)
+                                print(f"[SeaTalk] Alert sent (verify): {'OK' if ok else 'FAIL'}"
+                                      f" | danger: {danger_pools}")
+                            elif args.send_group:
+                                ok = seatalk_send_group(st_cfg["group_id"], msg, st_token)
+                                print(f"[SeaTalk] Alert sent (group): {'OK' if ok else 'FAIL'}"
+                                      f" | danger: {danger_pools}")
+                    except Exception as e:
+                        print(f"[WARN] SeaTalk send failed: {e}", file=sys.stderr)
+                else:
+                    print(f"[SeaTalk] All pools OK, no alert sent.")
+    
     # Execute
     if not args.loop:
         do_cycle()
         return
-
+    
     mode = "VERIFY" if args.verify else ("GROUP" if args.send_group else "LOG-ONLY")
     print(f"PID: {os.getpid()}")
     trigger_desc = alert_cfg.get("trigger", {})
@@ -778,7 +820,7 @@ def main():
         f"trigger={trigger_desc.get('metric','exp_util')}<{trigger_desc.get('threshold_pct',70)}% "
         f"over {trigger_desc.get('window_hours',3)}h)"
     )
-
+    
     while True:
         try:
             do_cycle()
@@ -788,31 +830,32 @@ def main():
         except Exception as e:
             print(f"[ERROR] {e}", file=sys.stderr)
             traceback.print_exc()
-
+    
         try:
             time.sleep(poll_interval)
         except KeyboardInterrupt:
             print("\n[Monitor] Stopped.")
             break
-
-
+    
+    
 if __name__ == "__main__":
     main()
-
+    
 """
 # Foreground (conditional alert to self):
 python3 aigc_gpu_alert.py --loop --verify
-
+    
 # Background (conditional alert to group):
 (cd /Users/youwei.wang/Documents/PythonProject/seatalk-bot \
 && nohup python3 aigc_gpu_alert.py \
     --loop \
     --send-group > aigc_gpu_alert.log 2>&1 & \
 echo "Started PID: $!")
-
+    
 # Check PID:
 head -3 aigc_gpu_alert.log | grep PID
-
+    
 # Kill:
 kill <pid>
 """
+    

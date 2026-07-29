@@ -70,6 +70,18 @@
             "threshold_pct": 70,
             "condition": "any_below"
         },
-        "description": "Send SeaTalk only when any pool has exp_util below threshold over the window. If all pools are OK, no message is sent."
+        "description": "Send SeaTalk only when any pool has exp_util below threshold over the window. If all pools are OK, no message is sent.",
+        "schedule": {
+            "timezone": "Asia/Shanghai",
+            "weekdays": [
+                1,
+                2,
+                3,
+                4,
+                5
+            ],
+            "start_time": "09:30",
+            "end_time": "19:00"
+        }
     }
 }
