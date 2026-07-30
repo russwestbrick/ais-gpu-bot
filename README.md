@@ -1,7 +1,7 @@
 # GPU Monitor (SeaTalk Bot)
 
 Multi-project GPU monitor: periodically checks AIS project GPU quota (experiment + notebook),
-logs to local JSONL + Google Sheet, and sends periodic summaries to SeaTalk.
+logs to local JSONL + Google Sheet, and sends conditional SeaTalk alerts.
 
 ## Monitored Pools
 
@@ -54,7 +54,7 @@ not commit those copied credential files.
 | Console (stdout) | Every 1 min | 3-line status (used/total per pool) |
 | JSONL (`data/gpu_monitor_YYYY-MM-DD.jsonl`) | Every 1 min | Full snapshot with exp/nb breakdown |
 | Google Sheet (daily tab) | Every 1 min | 1 row: timestamp + 6 fields per pool |
-| SeaTalk (verify/group) | Every 6 hours | Status + utilization breakdown |
+| SeaTalk (verify/group) | Every alert check interval, only if triggered | Markdown alert with utilization breakdown + Google Sheet link |
 
 ## Usage
 
@@ -65,11 +65,14 @@ python3 aigc_gpu_alert.py
 # Continuous monitoring, log only
 python3 aigc_gpu_alert.py --loop
 
-# Continuous + SeaTalk verify (private message to yourself)
+# Continuous + SeaTalk verify (private message to verify_email)
 python3 aigc_gpu_alert.py --loop --verify
 
 # Continuous + SeaTalk group
 python3 aigc_gpu_alert.py --loop --send-group
+
+# Continuous + verify, checking alert condition every 60 seconds
+python3 aigc_gpu_alert.py --loop --verify --seatalk-interval 60
 
 # Dry-run (console only, no writes)
 python3 aigc_gpu_alert.py --dry-run
@@ -83,26 +86,76 @@ python3 test_seatalk.py
 | Arg | Default | Description |
 |-----|---------|-------------|
 | `--loop` | off | Continuous monitoring |
-| `--verify` | off | SeaTalk to yourself only |
-| `--send-group` | off | SeaTalk to group chat |
+| `--verify` | off | Enable SeaTalk private alerts to `seatalk.verify_email` |
+| `--send-group` | off | Enable SeaTalk group alerts to `seatalk.group_id` |
 | `--interval` | 60 (from config) | Poll interval in seconds |
-| `--seatalk-interval` | 21600 (from config) | SeaTalk send interval in seconds |
-| `--dry-run` | off | Preview only |
+| `--seatalk-interval` | `alert.check_interval_seconds` (fallback `intervals.seatalk_seconds`, then 3600) | Alert evaluation interval in seconds |
+| `--dry-run` | off | Preview only: console output, no JSONL/GSheet/SeaTalk writes |
+
+SeaTalk is never enabled by default. It only runs when `--verify` or
+`--send-group` is provided, and it still sends only when the configured alert
+condition is true.
+
+## SeaTalk Alert Logic
+
+SeaTalk alert behavior is configured under `alert` in
+`config/monitor_config.json`.
+
+- Schedule gate: alerts are only allowed within `alert.schedule.weekdays`,
+  `start_time`, and `end_time`.
+- Timezone: `alert.schedule.timezone` is used for console timestamps, JSONL
+  timestamps, Google Sheet tab dates, SeaTalk message timestamps, and schedule
+  checks. The default is `Asia/Shanghai`.
+- Trigger gate: the default trigger sends when any pool has rolling
+  `exp_util < 70%` over `3h`.
+- Healthy case: if all pools are above threshold, the loop prints
+  `[SeaTalk] All pools OK, no alert sent.`
+- Token behavior: before initialization checks and before each actual send, the
+  script requests a fresh SeaTalk `app_access_token`. The local token cache is
+  written only as a debugging aid and is not reused for sending.
+
+Current alert message shape:
+
+```markdown
+**GPU Monitor**
+`2026-07-30 10:50:55`
+---
+1. 🔴 **Listing B300** | `hybrid-sg16`
+   - Current: `0/6` GPUs (0%)
+   - Experiment: `0/2` | Notebook: `0/4`
+   - **3h00m avg: exp 68%** | nb 50% | total 64%
+
+---
+link: https://docs.google.com/spreadsheets/d/<spreadsheet_id>/edit
+```
 
 ## Utilization Calculation
 
 - Utilization is calculated from in-memory history only (data since last service restart).
-- `util% = mean(used/quota)` across all 1-min snapshots in the window.
+- `util% = mean(used/quota)` across snapshots in the configured window.
 - Broken down by experiment and notebook.
-- Memory is cleaned every 6 hours to prevent OOM.
+- Memory keeps at least the alert window and status window, with a minimum of 6 hours.
 
 ## Google Sheet
 
 - Spreadsheet: configured in `config/monitor_config.json`.
-- Each day creates a new worksheet tab named `YYYY-MM-DD`.
+- Each day creates a new worksheet tab named `YYYY-MM-DD` in the configured alert timezone.
 - 1 row per minute, columns: `timestamp | pool1_exp_used | pool1_exp_total | ... | pool3_total_quota`.
 - Sheets older than 7 days are auto-deleted.
 - Service account must have Editor access to the spreadsheet.
+- SeaTalk alerts include a direct link to this spreadsheet.
+
+## start.sh
+
+`start.sh` is the notebook-friendly launcher. It installs runtime dependencies,
+stops the previous `pid.txt` process if it is still this monitor, and starts:
+
+```bash
+python3 -u aigc_gpu_alert.py --loop --verify --seatalk-interval 60
+```
+
+It also installs `tzdata` so `Asia/Shanghai` can be resolved on minimal Linux
+notebook images.
 
 ## Docker
 
@@ -117,7 +170,22 @@ docker run -d --name gpu-monitor gpu-monitor python3 aigc_gpu_alert.py --loop
 
 ### config/monitor_config.json
 
-Pool definitions, intervals, GSheet spreadsheet ID, SeaTalk group/verify config.
+Main runtime config:
+
+- `pools`: AIS projects/zones/GPU models to monitor.
+- `seatalk.group_id`: target group for `--send-group`.
+- `seatalk.verify_email`: private target for `--verify`; resolved to
+  `employee_code` at startup.
+- `gsheet.spreadsheet_id`: Google Sheet ID used for writes and the SeaTalk
+  message `link:`.
+- `intervals.poll_seconds`: default monitor poll interval.
+- `status.metric` and `status.window_minutes`: rolling metric shown in console
+  and SeaTalk messages.
+- `status.styles`: icon/label display rules. Empty labels are preserved and not
+  rendered as Markdown `****`.
+- `alert.check_interval_seconds`: default alert evaluation interval.
+- `alert.trigger`: metric, threshold, rolling window, and condition.
+- `alert.schedule`: timezone, weekdays, and allowed send window.
 
 ### config/ais_config.json
 
