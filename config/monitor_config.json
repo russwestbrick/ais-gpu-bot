@@ -48,15 +48,15 @@
         "styles": {
             "excellent": {
                 "icon": "🟢",
-                "label": "A"
+                "label": ""
             },
             "medium": {
                 "icon": "🟡",
-                "label": "B"
+                "label": ""
             },
             "danger": {
                 "icon": "🔴",
-                "label": "C",
+                "label": "",
                 "bold": true
             }
         }
