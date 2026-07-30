@@ -8,7 +8,7 @@ SeaTalk only when at least one pool has danger-level utilization.
 
 Alert logic (configurable in config/monitor_config.json -> "alert"):
   - Every check_interval (default 1H), evaluate each pool's exp GPU
-    utilization over a rolling window (default 3H).
+    utilization over the status rolling window (default 3H).
   - If ANY pool's average is below the threshold (default 70%), send
     the full status message.  Otherwise stay silent.
 
@@ -86,7 +86,7 @@ def load_monitor_config():
 
     status_cfg = cfg.setdefault("status", {})
     status_cfg.setdefault("metric", "exp_util")
-    status_cfg.setdefault("window_minutes", 8)
+    status_cfg.setdefault("window_minutes", 180)
 
     thresholds = status_cfg.setdefault("thresholds", {})
     thresholds.setdefault("excellent_gt", 90)
@@ -109,7 +109,6 @@ def load_monitor_config():
     alert_cfg.setdefault("check_interval_seconds", 3600)
     trigger = alert_cfg.setdefault("trigger", {})
     trigger.setdefault("metric", "exp_util")
-    trigger.setdefault("window_hours", 3)
     trigger.setdefault("threshold_pct", 70)
     trigger.setdefault("condition", "any_below")
 
@@ -563,10 +562,13 @@ def _metric_display_name(metric):
     }.get(metric, metric)
 
 
+def _status_window_seconds(status_cfg):
+    return max(int(status_cfg.get("window_minutes", 180) * 60), 60)
+
+
 def _resolve_status_context(snap, history, status_cfg):
     metric = status_cfg.get("metric", "exp_util")
-    window_minutes = status_cfg.get("window_minutes", 8)
-    window_seconds = max(int(window_minutes * 60), 60)
+    window_seconds = _status_window_seconds(status_cfg)
     util = history.get_utilization(snap["name"], window_seconds=window_seconds) if history else None
 
     current_metrics = {
@@ -688,18 +690,17 @@ def _in_alert_schedule(alert_cfg):
 
 # ===================== ALERT TRIGGER CHECK =======================
 
-def check_alert_trigger(history, pools, alert_cfg):
+def check_alert_trigger(history, pools, alert_cfg, status_cfg):
     """Evaluate whether any pool breaches the alert threshold.
 
     Returns (should_send: bool, danger_pools: list[str]).
     """
     trigger = alert_cfg.get("trigger", {})
     metric = trigger.get("metric", "exp_util")
-    window_hours = trigger.get("window_hours", 3)
     threshold = trigger.get("threshold_pct", 70)
     condition = trigger.get("condition", "any_below")
 
-    window_seconds = int(window_hours * 3600)
+    window_seconds = _status_window_seconds(status_cfg)
     danger_pools = []
 
     for pool_cfg in pools:
@@ -774,10 +775,9 @@ def main():
             else:
                 sys.exit(f"[ERROR] Could not resolve {st_cfg['verify_email']}")
 
-    # In-memory history — keep at least alert window + margin
-    alert_window_seconds = int(alert_cfg.get("trigger", {}).get("window_hours", 3) * 3600)
-    status_window_seconds = max(int(status_cfg.get("window_minutes", 180) * 60), 60)
-    history_window = max(alert_window_seconds, status_window_seconds, 21600)
+    # In-memory history retains extra data, while utilization uses status.window_minutes.
+    status_window_seconds = _status_window_seconds(status_cfg)
+    history_window = max(status_window_seconds, 21600)
     history = MemoryHistory(max_window_seconds=history_window)
 
     last_alert_check = 0  # epoch of last alert evaluation
@@ -829,7 +829,7 @@ def main():
             if not _in_alert_schedule(alert_cfg):
                 print(f"[SeaTalk] Outside alert schedule, skipped.")
             else:
-                should_send, danger_pools = check_alert_trigger(history, pools, alert_cfg)
+                should_send, danger_pools = check_alert_trigger(history, pools, alert_cfg, status_cfg)
                 if should_send:
                     try:
                         st_token = seatalk_get_token(
@@ -864,7 +864,7 @@ def main():
         f"[Monitor] Loop started (mode={mode}, poll={poll_interval}s, "
         f"alert_check={seatalk_interval}s, "
         f"trigger={trigger_desc.get('metric','exp_util')}<{trigger_desc.get('threshold_pct',70)}% "
-        f"over {trigger_desc.get('window_hours',3)}h)"
+        f"over {status_cfg.get('window_minutes', 180)}min)"
     )
     
     while True:

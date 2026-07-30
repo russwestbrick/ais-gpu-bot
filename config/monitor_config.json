@@ -66,11 +66,10 @@
         "check_interval_seconds": 3600,
         "trigger": {
             "metric": "exp_util",
-            "window_hours": 3,
             "threshold_pct": 70,
             "condition": "any_below"
         },
-        "description": "Send SeaTalk only when any pool has exp_util below threshold over the window. If all pools are OK, no message is sent.",
+        "description": "Send SeaTalk only when any pool has exp_util below threshold over status.window_minutes. If all pools are OK, no message is sent.",
         "schedule": {
             "timezone": "Asia/Shanghai",
             "weekdays": [

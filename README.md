@@ -104,6 +104,9 @@ SeaTalk alert behavior is configured under `alert` in
 - 中文详细逻辑：主循环按 `--interval` / `intervals.poll_seconds` 轮询 AIS，
   默认是每 60 秒探测一次。每一轮都会拉取 GPU quota、更新内存历史、打印
   console，并写入 JSONL / Google Sheet。
+- 平均利用率窗口只有一个配置：`status.window_minutes`。console 展示、
+  SeaTalk 消息内容、以及 SeaTalk 告警触发判断都用这个窗口；当前配置是
+  `180` 分钟。
 - SeaTalk 不是每轮都检查。只有启动参数带了 `--verify` 或 `--send-group`，
   且当前时间距离上一次“告警检查”已经达到 `--seatalk-interval` /
   `alert.check_interval_seconds` 时，才进入 SeaTalk 告警判断。
@@ -128,7 +131,7 @@ SeaTalk alert behavior is configured under `alert` in
   timestamps, Google Sheet tab dates, SeaTalk message timestamps, and schedule
   checks. The default is `Asia/Shanghai`.
 - Trigger gate: the default trigger sends when any pool has rolling
-  `exp_util < 70%` over `3h`.
+  `exp_util < 70%` over `status.window_minutes`.
 - Healthy case: if all pools are above threshold, the loop prints
   `[SeaTalk] All pools OK, no alert sent.`
 - Token behavior: before initialization checks and before each actual send, the
@@ -153,9 +156,9 @@ link: https://docs.google.com/spreadsheets/d/<spreadsheet_id>/edit
 ## Utilization Calculation
 
 - Utilization is calculated from in-memory history only (data since last service restart).
-- `util% = mean(used/quota)` across snapshots in the configured window.
+- `util% = mean(used/quota)` across snapshots in `status.window_minutes`.
 - Broken down by experiment and notebook.
-- Memory keeps at least the alert window and status window, with a minimum of 6 hours.
+- Memory keeps at least `status.window_minutes`, with a minimum of 6 hours.
 
 ## Google Sheet
 
@@ -200,12 +203,13 @@ Main runtime config:
 - `gsheet.spreadsheet_id`: Google Sheet ID used for writes and the SeaTalk
   message `link:`.
 - `intervals.poll_seconds`: default monitor poll interval.
-- `status.metric` and `status.window_minutes`: rolling metric shown in console
-  and SeaTalk messages.
+- `status.metric` and `status.window_minutes`: rolling metric and averaging
+  window used by console, SeaTalk messages, and SeaTalk alert trigger checks.
 - `status.styles`: icon/label display rules. Empty labels are preserved and not
   rendered as Markdown `****`.
 - `alert.check_interval_seconds`: default alert evaluation interval.
-- `alert.trigger`: metric, threshold, rolling window, and condition.
+- `alert.trigger`: metric, threshold, and condition. The rolling window comes
+  from `status.window_minutes`.
 - `alert.schedule`: timezone, weekdays, and allowed send window.
 
 ### config/ais_config.json
