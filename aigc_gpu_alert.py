@@ -31,7 +31,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ============================= PATHS ==============================
@@ -100,7 +100,7 @@ def load_monitor_config():
     }.items():
         style = styles.setdefault(level, {})
         for key, value in defaults.items():
-            if style.get(key) in (None, ""):
+            if key not in style or style[key] is None:
                 style[key] = value
 
     # Defaults for conditional alert config
@@ -347,7 +347,7 @@ def _build_gsheet_header(pools):
     return header
 
 
-def write_gsheet(spreadsheet_id, snapshots, ts_str, pools_cfg, retention_days=7):
+def write_gsheet(spreadsheet_id, snapshots, ts_str, pools_cfg, retention_days=7, now_dt=None):
     gc, gspread_mod = _get_gsheet_client()
     if gc is None:
         return
@@ -397,7 +397,8 @@ def write_gsheet(spreadsheet_id, snapshots, ts_str, pools_cfg, retention_days=7)
 
     # Retention: delete sheets older than N days
     try:
-        cutoff_date = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+        cutoff_base = now_dt or datetime.now()
+        cutoff_date = (cutoff_base - timedelta(days=retention_days)).strftime("%Y-%m-%d")
         for existing in sh.worksheets():
             title = existing.title
             if len(title) == 10 and title < cutoff_date:
@@ -479,6 +480,30 @@ def seatalk_send_user(employee_code, content, st_token, host="https://openapi.se
 
 # ====================== MESSAGE BUILDER ===========================
 
+_FIXED_TZ_OFFSETS = {
+    "Asia/Shanghai": 8,
+    "Asia/Singapore": 8,
+    "Singapore": 8,
+    "UTC": 0,
+}
+
+
+def _get_alert_timezone(alert_cfg):
+    schedule = (alert_cfg or {}).get("schedule") or {}
+    tz_name = schedule.get("timezone", "Asia/Shanghai")
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(tz_name)
+    except Exception:
+        # AIS notebooks may lack system tzdata. Keep SG/CN alerts on UTC+8.
+        if tz_name in _FIXED_TZ_OFFSETS:
+            return timezone(timedelta(hours=_FIXED_TZ_OFFSETS[tz_name]))
+        raise
+
+
+def _now_in_alert_timezone(alert_cfg):
+    return datetime.now(_get_alert_timezone(alert_cfg))
+
 def _fmt_gpu(v):
     """Format GPU count: integer if whole, else 1 decimal."""
     return str(int(v)) if v == int(v) else f"{v:.1f}"
@@ -548,9 +573,9 @@ def _resolve_status_context(snap, history, status_cfg):
     }
 
 
-def build_status_message(snapshots, history, status_cfg):
+def build_status_message(snapshots, history, status_cfg, alert_cfg=None):
     """Build a compact SeaTalk status message with utilization breakdown."""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = _now_in_alert_timezone(alert_cfg).strftime("%Y-%m-%d %H:%M:%S")
     lines = [
         f"**GPU Monitor**",
         f"`{now_str}`",
@@ -634,16 +659,7 @@ def _in_alert_schedule(alert_cfg):
     if not schedule:
         return True  # no schedule configured -> always allowed
 
-    tz_name = schedule.get("timezone", "Asia/Shanghai")
-    try:
-        from zoneinfo import ZoneInfo
-        tz = ZoneInfo(tz_name)
-    except ImportError:
-        # Python < 3.9 fallback: use fixed UTC+8 for Asia/Shanghai
-        from datetime import timezone
-        tz = timezone(timedelta(hours=8))
-
-    now_tz = datetime.now(tz)
+    now_tz = _now_in_alert_timezone(alert_cfg)
     weekday = now_tz.isoweekday()  # Mon=1 .. Sun=7
     allowed_days = schedule.get("weekdays", [1, 2, 3, 4, 5])
     if weekday not in allowed_days:
@@ -755,7 +771,8 @@ def main():
         nonlocal last_alert_check
 
         now = time.time()
-        ts_str = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        now_display = _now_in_alert_timezone(alert_cfg)
+        ts_str = now_display.strftime("%Y-%m-%dT%H:%M:%S")
 
         # Fetch
         snapshots = fetch_all_snapshots(ais_host, ais_token, pools)
@@ -765,7 +782,7 @@ def main():
             history.add(snapshots)
 
         # Console output
-        ts_display = datetime.now().strftime("%H:%M:%S")
+        ts_display = now_display.strftime("%H:%M:%S")
         print(
             f"[{ts_display}]\n"
             f"{build_console_lines(snapshots, history if not args.dry_run else None, status_cfg)}"
@@ -786,6 +803,7 @@ def main():
                 gs_cfg["spreadsheet_id"], snapshots, ts_str,
                 pools_cfg=pools,
                 retention_days=gs_cfg.get("retention_days", 7),
+                now_dt=now_display,
             )
         except Exception as e:
             print(f"[WARN] GSheet write failed: {e}", file=sys.stderr)
@@ -802,7 +820,7 @@ def main():
                         st_token = seatalk_get_token(
                             st_creds["app_id"], st_creds["app_secret"])
                         if st_token:
-                            msg = build_status_message(snapshots, history, status_cfg)
+                            msg = build_status_message(snapshots, history, status_cfg, alert_cfg)
                             if args.verify and verify_code:
                                 ok = seatalk_send_user(verify_code, msg, st_token)
                                 print(f"[SeaTalk] Alert sent (verify): {'OK' if ok else 'FAIL'}"
