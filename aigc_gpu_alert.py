@@ -549,6 +549,12 @@ def _pool_heading(index, status_icon, name, zone, status_label):
     return prefix + " | ".join(parts)
 
 
+def _gsheet_url(spreadsheet_id):
+    if not spreadsheet_id:
+        return ""
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+
+
 def _metric_display_name(metric):
     return {
         "exp_util": "exp",
@@ -578,7 +584,7 @@ def _resolve_status_context(snap, history, status_cfg):
     }
 
 
-def build_status_message(snapshots, history, status_cfg, alert_cfg=None):
+def build_status_message(snapshots, history, status_cfg, alert_cfg=None, spreadsheet_id=None):
     """Build a compact SeaTalk status message with utilization breakdown."""
     now_str = _now_in_alert_timezone(alert_cfg).strftime("%Y-%m-%d %H:%M:%S")
     lines = [
@@ -624,6 +630,10 @@ def build_status_message(snapshots, history, status_cfg, alert_cfg=None):
                 f"total {util['total_util']:.0f}%"
             )
         lines.append("")
+
+    link = _gsheet_url(spreadsheet_id)
+    if link:
+        lines.extend(["---", f"link: {link}"])
 
     return "\n".join(lines).rstrip()
 
@@ -825,7 +835,10 @@ def main():
                         st_token = seatalk_get_token(
                             st_creds["app_id"], st_creds["app_secret"])
                         if st_token:
-                            msg = build_status_message(snapshots, history, status_cfg, alert_cfg)
+                            msg = build_status_message(
+                                snapshots, history, status_cfg, alert_cfg,
+                                spreadsheet_id=gs_cfg.get("spreadsheet_id"),
+                            )
                             if args.verify and verify_code:
                                 ok = seatalk_send_user(verify_code, msg, st_token)
                                 print(f"[SeaTalk] Alert sent (verify): {'OK' if ok else 'FAIL'}"
