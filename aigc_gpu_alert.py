@@ -502,9 +502,21 @@ def _status_style(metric_value, status_cfg):
 
 def _format_status_label(style, markdown=False):
     label = style.get("label", "")
+    if not label:
+        return ""
     if markdown and style.get("bold"):
         return f"**{label}**"
     return label
+
+
+def _pool_heading(index, status_icon, name, zone, status_label):
+    prefix = f"{index}. "
+    parts = [f"{status_icon} **{name}**"]
+    if zone:
+        parts.append(f"`{zone}`")
+    if status_label:
+        parts.append(status_label)
+    return prefix + " | ".join(parts)
 
 
 def _metric_display_name(metric):
@@ -540,11 +552,12 @@ def build_status_message(snapshots, history, status_cfg):
     """Build a compact SeaTalk status message with utilization breakdown."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"**GPU Monitor** | {now_str}",
+        f"**GPU Monitor**",
+        f"`{now_str}`",
         "---",
     ]
 
-    for snap in snapshots:
+    for index, snap in enumerate(snapshots, start=1):
         name = snap["name"]
         total_used = snap["total_used"]
         total_quota = snap["total_quota"]
@@ -560,15 +573,13 @@ def build_status_message(snapshots, history, status_cfg):
         status_icon = status_style.get("icon", "")
         status_label = _format_status_label(status_style, markdown=True)
 
+        lines.append(_pool_heading(index, status_icon, name, snap.get("zone", ""), status_label))
         lines.append(
-            f"{status_icon} **{name}** ({snap.get('zone', '')}) | {status_label}"
+            f"   - Current: `{_fmt_gpu(total_used)}/{int(total_quota)}` GPUs ({current_total_pct:.0f}%)"
         )
         lines.append(
-            f"  Current: {_fmt_gpu(total_used)}/{int(total_quota)} GPUs ({current_total_pct:.0f}%)"
-        )
-        lines.append(
-            f"  Experiment: {_fmt_gpu(exp_used)}/{int(exp_total)}"
-            f"  |  Notebook: {_fmt_gpu(nb_used)}/{int(nb_total)}"
+            f"   - Experiment: `{_fmt_gpu(exp_used)}/{int(exp_total)}`"
+            f" | Notebook: `{_fmt_gpu(nb_used)}/{int(nb_total)}`"
         )
 
         if util:
@@ -578,8 +589,7 @@ def build_status_message(snapshots, history, status_cfg):
             else:
                 window_label = f"{mins}min"
             lines.append(
-                f"  {window_label} avg: "
-                f"exp {util['exp_util']:.0f}% | "
+                f"   - **{window_label} avg: exp {util['exp_util']:.0f}%** | "
                 f"nb {util['nb_util']:.0f}% | "
                 f"total {util['total_util']:.0f}%"
             )
