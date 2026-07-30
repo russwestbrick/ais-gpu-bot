@@ -426,22 +426,8 @@ def _seatalk_token_expires_at(expire_value):
 
 
 def seatalk_get_token(app_id, app_secret, host="https://openapi.seatalk.io"):
-    """Get SeaTalk access token. Re-fetches every call for simplicity in
-    long-running services (token is cached server-side and fast)."""
+    """Get a fresh SeaTalk access token and save it for debugging."""
     cache_path = CONFIG_DIR / ".seatalk_token_cache.json"
-    if cache_path.exists():
-        try:
-            cached = json.loads(cache_path.read_text())
-            expires_at = cached.get("expires_at", cached.get("expire", 0))
-            cache_matches = (
-                cached.get("host") == host
-                and cached.get("app_id") == app_id
-            )
-            if cache_matches and float(expires_at) - 120 > time.time():
-                return cached["app_access_token"]
-        except Exception:
-            pass
-
     resp = _http_post(
         f"{host}/auth/app_access_token",
         {"app_id": app_id, "app_secret": app_secret},
