@@ -413,6 +413,18 @@ def write_gsheet(spreadsheet_id, snapshots, ts_str, pools_cfg, retention_days=7,
 
 # ====================== SEATALK MESSAGING =========================
 
+def _seatalk_token_expires_at(expire_value):
+    """SeaTalk may return expire as either epoch seconds or TTL seconds."""
+    now = time.time()
+    try:
+        expire_value = float(expire_value)
+    except (TypeError, ValueError):
+        expire_value = 7200
+    if expire_value > 1_000_000_000:
+        return expire_value
+    return now + expire_value
+
+
 def seatalk_get_token(app_id, app_secret, host="https://openapi.seatalk.io"):
     """Get SeaTalk access token. Re-fetches every call for simplicity in
     long-running services (token is cached server-side and fast)."""
@@ -420,7 +432,12 @@ def seatalk_get_token(app_id, app_secret, host="https://openapi.seatalk.io"):
     if cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text())
-            if cached.get("expire", 0) - 120 > time.time():
+            expires_at = cached.get("expires_at", cached.get("expire", 0))
+            cache_matches = (
+                cached.get("host") == host
+                and cached.get("app_id") == app_id
+            )
+            if cache_matches and float(expires_at) - 120 > time.time():
                 return cached["app_access_token"]
         except Exception:
             pass
@@ -432,7 +449,9 @@ def seatalk_get_token(app_id, app_secret, host="https://openapi.seatalk.io"):
     if resp.get("code") != 0:
         print(f"[ERROR] SeaTalk token failed: {resp}", file=sys.stderr)
         return None
-    resp["expire"] = time.time() + resp.get("expire", 7200)
+    resp["host"] = host
+    resp["app_id"] = app_id
+    resp["expires_at"] = _seatalk_token_expires_at(resp.get("expire", 7200))
     try:
         cache_path.write_text(json.dumps(resp))
     except Exception:
