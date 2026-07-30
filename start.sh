@@ -4,8 +4,9 @@ cd "$DIR"
 PID_FILE="$DIR/pid.txt"
 
 # Install dependencies
-pip install -q shopee-ais -i https://pypi.garenanow.com/simple/
-pip install -q gspread google-auth
+pip3 install -q shopee-ais -i https://pypi.garenanow.com/simple/
+pip3 install -q gspread google-auth
+pip3 install tzdata
 
 if [[ -f "$PID_FILE" ]]; then
     old_pid="$(tr -d '[:space:]' < "$PID_FILE")"
